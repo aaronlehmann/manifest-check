@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -111,8 +112,9 @@ func checkRepo(registry distribution.Namespace, repoName string) error {
 }
 
 func main() {
-	var configPath string
+	var configPath, reposPath string
 	flag.StringVar(&configPath, "config", "", "path to a config file")
+	flag.StringVar(&reposPath, "repos", "", "file with a list of repos")
 	flag.Parse()
 
 	if configPath == "" {
@@ -142,17 +144,37 @@ func main() {
 
 	registry := storage.NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider(), false, false, false)
 
-	repos := make([]string, maxRepos)
+	var repos []string
 
-	n, err := registry.Repositories(ctx, repos, "")
-	if err != nil && err != io.EOF {
-		panic(fmt.Sprintf("unexpected error getting repo: %v", err))
-	}
-	if n == maxRepos {
-		panic("too many repositories")
-	}
+	if reposPath != "" {
+		reposFile, err := os.Open(reposPath)
+		if err != nil {
+			panic(fmt.Sprintf("could not open repos file: %v", err))
+		}
 
-	repos = repos[:n]
+		scanner := bufio.NewScanner(reposFile)
+		for scanner.Scan() {
+			repoName := scanner.Text()
+			if len(repoName) > 0 {
+				if repoName[0] == '+' {
+					repoName = repoName[1:]
+				}
+				repos = append(repos, repoName)
+			}
+		}
+	} else {
+		repos = make([]string, maxRepos)
+
+		n, err := registry.Repositories(ctx, repos, "")
+		if err != nil && err != io.EOF {
+			panic(fmt.Sprintf("unexpected error getting repo: %v", err))
+		}
+		if n == maxRepos {
+			panic("too many repositories")
+		}
+
+		repos = repos[:n]
+	}
 
 	for _, repoName := range repos {
 		if err := checkRepo(registry, repoName); err != nil {
