@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/configuration"
 	"github.com/docker/distribution/context"
-	"github.com/docker/distribution/manifest"
+	"github.com/docker/distribution/manifest/schema1"
 	"github.com/docker/distribution/registry/storage"
 	"github.com/docker/distribution/registry/storage/cache/memory"
 	"github.com/docker/distribution/registry/storage/driver/factory"
@@ -31,7 +32,7 @@ const (
 )
 
 // based on https://github.com/docker/distribution/pull/867
-func checkManifest(repoName string, mnfst *manifest.SignedManifest) error {
+func checkManifest(repoName string, mnfst *schema1.SignedManifest) error {
 	if len(mnfst.FSLayers) == 0 || len(mnfst.History) == 0 {
 		fmt.Printf("%s: no layers present\n", repoName)
 	}
@@ -97,6 +98,8 @@ func checkRepo(registry distribution.Namespace, repoName string) error {
 		return fmt.Errorf("unexpected error getting tags: %v", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "checking repo %s (%d tags)\n", repoName)
+
 	for _, tag := range tags {
 		mnfst, err := manifests.GetByTag(tag)
 		if err != nil {
@@ -118,7 +121,7 @@ func main() {
 	flag.Parse()
 
 	if configPath == "" {
-		fmt.Println("must supply a config file with -config")
+		fmt.Fprintln(os.Stderr, "must supply a config file with -config")
 		flag.Usage()
 		return
 	}
@@ -142,7 +145,7 @@ func main() {
 		panic(fmt.Sprintf("error creating storage driver: %v", err))
 	}
 
-	registry := storage.NewRegistryWithDriver(ctx, driver, memory.NewInMemoryBlobDescriptorCacheProvider(), false, false, false)
+	registry, _ := storage.NewRegistry(ctx, driver, storage.BlobDescriptorCacheProvider(memory.NewInMemoryBlobDescriptorCacheProvider()))
 
 	var repos []string
 
@@ -176,9 +179,26 @@ func main() {
 		repos = repos[:n]
 	}
 
-	for _, repoName := range repos {
-		if err := checkRepo(registry, repoName); err != nil {
-			panic(err)
-		}
+	var wg sync.WaitGroup
+	repoChan := make(chan string)
+
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			for repoName := range repoChan {
+				if err := checkRepo(registry, repoName); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+				}
+			}
+			wg.Done()
+		}()
 	}
+
+	for _, repoName := range repos {
+		repoChan <- repoName
+	}
+
+	close(repoChan)
+
+	wg.Wait()
 }
